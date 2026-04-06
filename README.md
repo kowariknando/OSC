@@ -35,6 +35,7 @@ This project is built using **Visual Studio Code** and the **PlatformIO** extens
      #define WIFI_PASS "YOUR_WIFI_PASSWORD"
      #define WIFI_IP   "192.168.1.XXX" // Your computer's local IP address
      ```
+5. If any library is not installed properly restart VS Code after installing PlatformIO IDE and try to Build any .cpp script, PlatformIO should install any required library.
 
 ### Flashing the Board
 This project supports both **CodeCell C3** and **CodeCell C6**.
@@ -69,9 +70,10 @@ macOS handles this natively via the IAC Driver.
 ### Step 2: Pure Data Configuration
 1. Install [Pure Data](https://puredata.info/downloads/pure-data).
 2. Open the `.pd` patch located in the `puredata/` folder of this repository.
-3. In Pure Data, go to the top menu: `Edit > Preferences > MIDI...` (or `Media > MIDI Settings`).
-4. Set the **Output Device** to the virtual port you just created (`loopMIDI Port` on Windows, or `IAC Driver` on macOS).
-5. Click Apply/OK.
+3. Depending on the Pure Data patch you may need to install some additional libraries. If you open any Pure Data patch and you see something like: 'declare -lib Gem' you will need to install the library Gem. To install an external library in Pure Data go to Tools->Search externals and search for the required library (Gem for example) and install it. After install it you may need to restart Pure Data.
+4. In Pure Data, go to the top menu: `Edit > Preferences > MIDI...` (or `Media > MIDI Settings`).
+5. Set the **Output Device** to the virtual port you just created (`loopMIDI Port` on Windows, or `IAC Driver` on macOS).
+6. Click Apply/OK.
 
 ### Step 3: DAW / Visualizer Setup
 Open Ableton, Reaper, or TouchDesigner.
