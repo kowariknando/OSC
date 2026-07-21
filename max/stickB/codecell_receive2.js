@@ -1,9 +1,10 @@
 autowatch = 1;
-outlets = 12; // 0-10: les 11 variables | 11: bateria
+outlets = 12; // 0-10: the 11 sensor variables | 11: battery
 
-var VARLIST = ["inercia","prox","state","act","gyro","comp","rot","steps","llum","grav","lin"];
+// NOTE: VARLIST is currently unused - channelVar is what drives the parsing.
+var VARLIST = ["inertia","prox","state","act","gyro","comp","rot","steps","light","grav","lin"];
 var device = "";
-var channelVar = ["inercia","prox","state","act","gyro","comp","rot","steps","llum","grav","lin","bat"];
+var channelVar = ["inertia","prox","state","act","gyro","comp","rot","steps","light","grav","lin","bat"];
 var channelTag = ["","","","","","","","","","","",""];
 
 function list() {
@@ -50,17 +51,17 @@ function updateAllTags() {
             channelTag[ch] = device + "_" + channelVar[ch];
         }
     }
-    post("Dispositiu -> " + device + "\n");
+    post("Device -> " + device + "\n");
 }
 
-// "setdevice <stickB>" - un sol nom de dispositiu per a tot el plugin
+// "setdevice <stickB>" - a single device name for the whole plugin
 function setdevice(name) {
     device = String(name);
     updateAllTags();
 }
 
-// "setvar <canal 0-11> <inercia/prox/state/act/gyro/comp/rot/steps/llum/grav/lin/bat>"
-// Normalment fix per canal (una variable per fila), pero es pot recablejar si cal.
+// "setvar <channel 0-11> <inertia/prox/state/act/gyro/comp/rot/steps/light/grav/lin/bat>"
+// Normally fixed per channel (one variable per row), but can be rewired if needed.
 function setvar(ch, name) {
     ch = Math.floor(ch);
     if (ch >= 0 && ch < 12) {
