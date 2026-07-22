@@ -43,7 +43,7 @@ const int port = UDP_PORT;
 
 // Tags built once, based on DEVICE_NAME
 String tagInertia, tagBat, tagProx, tagState, tagAct, tagGyro, tagComp, tagRot, tagSteps;
-String tagLight, tagGrav, tagLin;
+String tagLight, tagGrav, tagLin, tagHead;
 
 float ax, ay, az;
 float filtered_magnitude = 0;
@@ -71,6 +71,9 @@ int lastGyro = -1;
 // --- MAGNETOMETER (magnitude, used as "compass") ---
 const float compMax = 100.0;
 int lastComp = -1;
+
+// --- COMPASS HEADING (atan2 of the magnetometer, 0-360 deg -> 0-127) ---
+int lastHead = -1;
 
 // --- ROTATION (yaw) ---
 int lastRot = -1;
@@ -115,6 +118,7 @@ void setup() {
   tagAct     = String(DEVICE_NAME) + "_act";
   tagGyro    = String(DEVICE_NAME) + "_gyro";
   tagComp    = String(DEVICE_NAME) + "_comp";
+  tagHead    = String(DEVICE_NAME) + "_head";
   tagRot     = String(DEVICE_NAME) + "_rot";
   tagSteps   = String(DEVICE_NAME) + "_steps";
   tagLight   = String(DEVICE_NAME) + "_light";
@@ -202,15 +206,27 @@ void loop() {
       }
     }
 
-    // ---- MAGNETOMETER (magnitude, used as "compass") ----
+    // ---- MAGNETOMETER: magnitude ("_comp") + digital-compass heading ("_head") ----
     if (SENSOR_PROFILE & MOTION_MAGNETOMETER) {
       float mx, my, mz;
       myCodeCell.Motion_MagnetometerRead(mx, my, mz);
+
+      // Field magnitude -> _comp (kept for the original single compass plugin)
       float compMag = sqrt((mx * mx) + (my * my) + (mz * mz));
       int compValue = constrain((int)map((long)compMag, 0, (long)compMax, 0, 127), 0, 127);
       if (compValue != lastComp) {
         sendUDP(tagComp, compValue);
         lastComp = compValue;
+      }
+
+      // Compass heading (atan2), 0-360 deg -> 0-127. See CodeCell "Digital Compass" docs.
+      // 0 = North, ~32 = East, ~64 = South, ~96 = West.
+      float heading = atan2(my, mx) * (180.0 / M_PI);
+      if (heading < 0) heading += 360.0;
+      int headValue = constrain((int)map((long)heading, 0, 360, 0, 127), 0, 127);
+      if (headValue != lastHead) {
+        sendUDP(tagHead, headValue);
+        lastHead = headValue;
       }
     }
 
