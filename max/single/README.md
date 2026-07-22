@@ -24,6 +24,20 @@ Each device has **two outlets**:
   device shows it as a `Battery: N%` label plus a dot that pulses on each ping —
   your at-a-glance "the board is alive" indicator.
 
+### The Smooth knob
+
+Each device has a **`Smooth`** parameter (a live number box, 0–100, saved with the
+Live set and automatable). It controls how organic the curve is, in real time:
+
+- **0** = raw / instant (the value jumps as fast as the sensor).
+- **50** (default) = moderate glide.
+- **100** = very smooth / slow (big spins and frantic juggling become gentle
+  curves instead of sudden jumps).
+
+Under the hood it sends `smoothamount <0..100>` to the JS, which maps it to the
+one-pole coefficient. Turn it up while the diabolo spins fast; turn it down when
+you want the sound to react sharply.
+
 ## ⚠️ The `.amxd` files are auto-generated and UNVERIFIED
 
 They were carved programmatically from `stickB` (one channel's mapping strip and

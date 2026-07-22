@@ -132,6 +132,14 @@ function setdevice() {
 // ---- live tuning ----
 function minspan(x)    { minSpan = x < 1 ? 1 : x; }
 function rangedecay(x) { rangeDecay = clamp01(x); }
+
+// "smoothamount 0..100" - the on-screen Smooth knob. 0 = raw/snappy,
+// 100 = very smooth. Maps to the internal one-pole coefficient (higher
+// amount = lower coefficient = gentler, more organic glide).
+function smoothamount(x) {
+    if (x < 0) x = 0; else if (x > 100) x = 100;
+    smoothing = 0.6 * Math.pow(0.04, x / 100.0); // 0 ->0.6, 50 ->~0.12, 100 ->~0.024
+}
 function resetrange()  { resetState(); post("[linear] Range reset\n"); }
 function printparams() {
     post("[linear] smoothing=" + smoothing + " minspan=" + minSpan +
