@@ -124,6 +124,16 @@ Outlet numbers refer to `codecell_receive2.js`. Most values are scaled to
 | 10 | `_lin` | Linear acceleration (gravity removed) | 0–127 |
 | 11 | `_bat` | Battery, every 5 s | 0–100, 101=charging, 102=USB only |
 
+Two further channels carry sleep state rather than sensor data:
+
+| Outlet | Suffix | Meaning | Range |
+|---|---|---|---|
+| 12 | `_sleep` | 1 just before sleeping, 0 on boot/wake | 0 or 1 |
+| 13 | `_timeout` | Current idle timeout, echoed on boot and on change | minutes, 0=off |
+
+Because waking is a full reboot, `_sleep 0` on boot doubles as "I am awake
+again" — that is what stops a sleep indicator in Max from latching on forever.
+
 **Changing a suffix breaks the Max device silently.** The firmware builds these
 tags in `setup()`; the JS rebuilds the same strings in `updateAllTags()`. Both
 sides must be edited together.
@@ -146,6 +156,56 @@ and are occasionally interesting to watch. The point is simply: **do not build
 musical behaviour on top of them.** If a synth parameter is driven by `_act`, it
 will change unpredictably and you will not be able to tell why.
 
+## Sleep and power saving
+
+Rehearsals do not need every pendulum awake the whole time. The firmware
+deep-sleeps a board after a period with no movement, and Ableton can also put
+boards to sleep on demand.
+
+**Waking is always physical: tap the pendulum.** Deep sleep powers the Wi-Fi
+radio down, so no network message can reach a sleeping board — this is a
+hardware fact, not a missing feature. The BNO085 stays awake on its own tiny
+power budget watching for a tap, and pulls the ESP32 back up when it feels one.
+Waking is a full reboot, so expect Wi-Fi to reconnect in a few seconds and the
+IMU to need its usual 10–30 s to settle.
+
+Auto-sleep is **skipped while the board is on USB** (battery reads 101 or 102),
+so it never sleeps out from under you while flashing or debugging.
+
+### Commands from Max to the boards
+
+The firmware listens on the same port **9999** it sends on. Prefix `all_`
+targets every board, `<DEVICE_NAME>_` targets one:
+
+| Command | Effect |
+|---|---|
+| `all_sleep 1` | Every board deep-sleeps now |
+| `stickB_sleep 1` | Only that board sleeps |
+| `all_timeout <minutes>` | Set the idle timeout, stored in flash |
+| `all_timeout 0` | Disable auto-sleep — use this during a performance |
+
+Send them from Max with `udpsend 255.255.255.255 9999` (broadcast, so no board
+IPs are needed). If broadcast is blocked on the network, send to each board's IP
+instead.
+
+Max's own `udpreceive 9999` also hears these broadcasts. They are harmless: the
+tag matches no channel, so the JS drops them.
+
+The timeout lives in **NVS flash** (`Preferences`, namespace `osc`, key
+`timeout`), so it survives sleep, reboots and reflashing. That is the whole
+point: set it once from Ableton, never reflash to change it.
+`DEFAULT_IDLE_TIMEOUT_MINUTES` in `main.cpp` is only the value used on a board
+that has never been told otherwise.
+
+### Wire format, both directions
+
+Outgoing data is plain text. Incoming commands are parsed leniently and accept
+**both** plain text (`all_sleep 1;`) and **OSC** (`/all_sleep` + `,i` + int32),
+because Max's `udpsend` emits OSC framing rather than raw text while `netcat`
+and similar tools send plain text. Testing a command by hand from a terminal and
+from Max therefore exercises two different code paths — both are supported on
+purpose, so don't "simplify" one away.
+
 ## Known issues
 
 **Two channels are dead** — the commit that translated the firmware to English
@@ -167,6 +227,15 @@ To finish the fix, open the device in Max and change:
 
 This is a general trap: **`setvar` messages in the `.amxd` override the defaults
 in the JS.** Renaming a channel means editing both, and the `.amxd` wins.
+
+**Outlets 12 and 13 are not wired yet.** `codecell_receive2.js` now declares 14
+outlets, but the `.amxd` still has to be opened in Max to connect the two new
+ones to a sleep indicator and a timeout display. Until then the sleep state
+simply isn't visible in Ableton — the firmware and JS sides are done.
+
+Adding outlets at the *end* does not disturb outlets 0–11, so existing patch
+cords survive. No `setvar` is needed for 12 and 13 either: the patch never sends
+one for those channels, so the JS defaults (`sleep`, `timeout`) stand.
 
 Also outstanding:
 - `platformio.ini` has a Spanish comment on the `ARDUINO_ESP32C6_DEV` flag.
