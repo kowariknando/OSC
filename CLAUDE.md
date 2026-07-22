@@ -174,15 +174,28 @@ Rehearsals do not need every pendulum awake the whole time. The firmware
 deep-sleeps a board after a period with no movement, and Ableton can also put
 boards to sleep on demand.
 
-**Waking is always physical: tap the pendulum.** Deep sleep powers the Wi-Fi
-radio down, so no network message can reach a sleeping board — this is a
-hardware fact, not a missing feature. The BNO085 stays awake on its own tiny
-power budget watching for a tap, and pulls the ESP32 back up when it feels one.
-Waking is a full reboot, so expect Wi-Fi to reconnect in a few seconds and the
-IMU to need its usual 10–30 s to settle.
+**Waking is always physical: tap the pendulum and give it a swing.** Deep sleep
+powers the Wi-Fi radio down, so no network message can reach a sleeping board —
+this is a hardware fact, not a missing feature. The BNO085 stays awake on its
+own tiny power budget watching for a tap, and pulls the ESP32 back up when it
+feels one. Waking is a full reboot, so expect Wi-Fi to reconnect in a few
+seconds and the IMU to need its usual 10–30 s to settle.
+
+The IMU wakes on **any single tap**, which is far too sensitive for a hanging
+diabolo — residual sway, the USB cable, or setting it down all register as taps
+and would otherwise reboot the board over and over (it looks like the board
+keeps "restarting"). So on wake the firmware runs `confirmWakeMotion()`: it
+watches the enabled motion sensor for ~2 s and only stays awake if the board is
+genuinely being moved. A stray tap goes **straight back to sleep** before Wi-Fi
+is ever brought up, so it never reappears in Max. In practice: to wake a board,
+tap it *and* swing/shake it. The thresholds are tunable `#define`s near the top
+of `main.cpp` (`wakeMotionThreshold`, `wakeGyroThreshold`, `wakeConfirmMs`).
 
 Auto-sleep is **skipped while the board is on USB** (battery reads 101 or 102),
-so it never sleeps out from under you while flashing or debugging.
+so it never sleeps out from under you while flashing or debugging. Note that a
+manual `all_sleep` command sleeps even on USB — and deep sleep is unreliable
+over USB, so test sleep/wake **on battery**, using the serial monitor only to
+watch the `>> Sleeping` / `>> Woke from a tap` messages.
 
 ### Commands from Max to the boards
 
