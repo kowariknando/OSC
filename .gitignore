@@ -4,3 +4,4 @@
 .vscode/launch.json
 .vscode/ipch
 include/wifi_configs.h
+.DS_Store
