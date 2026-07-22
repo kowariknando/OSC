@@ -4,7 +4,5 @@
 .vscode/launch.json
 .vscode/ipch
 include/wifi_configs.h
+# macOS Finder metadata — ignored in every folder
 .DS_Store
-src/.DS_Store
-.DS_Store
-max-cell/.DS_Store
