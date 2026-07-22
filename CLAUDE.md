@@ -37,7 +37,8 @@ unless asked.
 | `include/wifi_configs.h` | Per-device secrets + name. **Git-ignored** — see below. |
 | `platformio.ini` | PlatformIO build config, ESP32-C6 target. |
 | `max/stickB/First_OSC_STICKB_v4.amxd` | The Max for Live device (binary). |
-| `max/stickB/codecell_receive2.js` | JS parser inside the `.amxd` that decodes UDP. |
+| `max/stickB/codecell_receive2.js` | JS parser inside the `.amxd` that decodes UDP (all channels). |
+| `max/single/*.js` | Single-variable plugins (gyro/inertia/linear/compass). See `max/single/README.md`. |
 | `sdkconfig.esp32-c6-devkitc-1` | Generated ESP-IDF config. Don't hand-edit. |
 
 One firmware serves all physical devices. To add a pendulum you change
@@ -66,12 +67,23 @@ Each developer keeps their own local copy. It is expected that a fresh clone
 #define WIFI_NAME   "your_network"
 #define WIFI_PASS   "your_password"
 #define WIFI_IP     "192.168.1.42"    // IP of the computer running Ableton
+
+// Optional, per-device. Omit both to keep the old behaviour (all sensors, 9999).
+#define SENSOR_PROFILE (MOTION_GYRO)  // only power the sensors this prop uses
+#define UDP_PORT       9001           // must match the plugin's udpreceive port
 ```
 
 `WIFI_IP` is the **receiving computer's** IP and differs per machine and per
 network. Both developers need their own value. Re-check it after joining a new
 Wi-Fi network — a wrong IP fails silently (the board connects, the data goes
 nowhere).
+
+`SENSOR_PROFILE` and `UDP_PORT` are **optional per-device tuning** (added for the
+single-variable plugins — see below). `SENSOR_PROFILE` is a sum of CodeCell mode
+flags (`MOTION_GYRO`, `MOTION_LINEAR_ACC`, `LIGHT`, …); the board only powers and
+streams those, so fewer flags means a **cooler board and less Wi-Fi traffic**.
+`UDP_PORT` is which port this prop streams to. Both fall back to the old defaults
+(the full sensor set, port 9999) when not defined, so omitting them is safe.
 
 ## Build and flash
 
