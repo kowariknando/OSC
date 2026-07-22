@@ -184,12 +184,25 @@ seconds and the IMU to need its usual 10–30 s to settle.
 The IMU wakes on **any single tap**, which is far too sensitive for a hanging
 diabolo — residual sway, the USB cable, or setting it down all register as taps
 and would otherwise reboot the board over and over (it looks like the board
-keeps "restarting"). So on wake the firmware runs `confirmWakeMotion()`: it
-watches the enabled motion sensor for ~2 s and only stays awake if the board is
-genuinely being moved. A stray tap goes **straight back to sleep** before Wi-Fi
-is ever brought up, so it never reappears in Max. In practice: to wake a board,
-tap it *and* swing/shake it. The thresholds are tunable `#define`s near the top
-of `main.cpp` (`wakeMotionThreshold`, `wakeGyroThreshold`, `wakeConfirmMs`).
+keeps "restarting"). Two defences work together:
+
+1. **Drain before sleeping.** `goToSleep()` services the IMU for ~120 ms so no
+   report is left pending on the wake line (GPIO7); a pending report holds that
+   line low and makes the board wake itself the instant it sleeps.
+2. **Require a few taps to actually wake.** On wake the board does *not* come up
+   immediately — `listenForWakeTaps()` counts taps (`MOTION_TAP_DETECTOR`) for
+   `wakeListenMs` and only stays awake after `wakeTapsNeeded` of them. One stray
+   tap never reaches the count, so the board goes **straight back to sleep**
+   before Wi-Fi is ever brought up and never reappears in Max.
+
+In practice: to wake a board, **tap it a few times** (a firm double/triple tap
+over about a second). Because waking is a full reboot that takes a second or
+two, tapping several times is what reliably lands taps inside the listening
+window. Both knobs are tunable `#define`s near the top of `main.cpp`
+(`wakeListenMs`, `wakeTapsNeeded`).
+
+`MOTION_TAP_DETECTOR` is OR'd into the `Init()` mask purely to feed this wake
+logic — it is never streamed as a channel.
 
 Auto-sleep is **skipped while the board is on USB** (battery reads 101 or 102),
 so it never sleeps out from under you while flashing or debugging. Note that a
