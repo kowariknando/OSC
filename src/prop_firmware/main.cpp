@@ -9,6 +9,8 @@
 #include <WiFiUdp.h>
 #include <Preferences.h>
 #include <math.h>
+#include "esp_sleep.h"
+#include "esp_system.h"
 
 CodeCell myCodeCell;
 WiFiUDP Udp;
@@ -152,13 +154,20 @@ void goToSleep() {
   }
   Serial.println(">> Going to sleep. Tap the pendulum a few times to wake it.");
 
-  // Drain any pending IMU reports so the wake interrupt line (GPIO7) is idle
-  // BEFORE we arm wake-on-LOW inside SleepTapTrigger(). If a report is still
-  // pending the line is already low and the board wakes itself instantly - which
-  // was a big part of the "it sleeps then restarts a second later" problem.
-  for (int i = 0; i < 40; i++) {
-    myCodeCell.Run(50);
-    delay(3);
+  // Wait until the board has been STILL (no taps) for a moment before sleeping.
+  // If a tap is already pending when SleepTapTrigger() arms wake-on-tap, the
+  // board wakes itself instantly - the likeliest cause of "sleeps then restarts".
+  // Reading the tap detector here also drains those pending events. Bounded so a
+  // constantly-disturbed board (e.g. charging noise) still sleeps eventually.
+  unsigned long quietSince = millis();
+  unsigned long hardStop = millis() + 4000;  // never wait more than 4 s
+  while (millis() < hardStop) {
+    if (myCodeCell.Run(50)) {
+      if (myCodeCell.Motion_TapDetectorRead()) {
+        quietSince = millis();  // a tap - restart the "still" timer
+      }
+    }
+    if (millis() - quietSince >= 800) break;  // 0.8 s with no taps = still
   }
 
   Serial.flush();
@@ -292,8 +301,39 @@ void handleIncomingUDP() {
   }
 }
 
+// Print WHY the board just started: a clean deep-sleep tap wake, a timer, or an
+// unexpected reset (brownout / crash). This is the line to read after clicking
+// sleep - it tells us whether "it woke by itself" is really a tap wake or
+// actually the board resetting.
+void printBootReason() {
+  esp_reset_reason_t rr = esp_reset_reason();
+  esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+
+  Serial.print(">> BOOT reason: ");
+  switch (rr) {
+    case ESP_RST_POWERON:  Serial.print("power-on/battery-connect"); break;
+    case ESP_RST_DEEPSLEEP: Serial.print("woke from DEEP SLEEP"); break;
+    case ESP_RST_BROWNOUT: Serial.print("BROWNOUT (voltage dip!)"); break;
+    case ESP_RST_PANIC:    Serial.print("CRASH/panic"); break;
+    case ESP_RST_SW:       Serial.print("software reset"); break;
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_WDT:      Serial.print("WATCHDOG reset"); break;
+    default:               Serial.print("other ("); Serial.print((int)rr); Serial.print(")"); break;
+  }
+  Serial.print("  | wake cause: ");
+  switch (wc) {
+    case ESP_SLEEP_WAKEUP_GPIO:      Serial.println("GPIO/tap"); break;
+    case ESP_SLEEP_WAKEUP_TIMER:     Serial.println("timer"); break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED: Serial.println("none (not a sleep wake)"); break;
+    default:                         Serial.print("other ("); Serial.print((int)wc); Serial.println(")"); break;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
+  delay(200);          // let USB CDC re-enumerate so this line isn't lost
+  printBootReason();
 
   // NOTE: these suffixes are part of the UDP protocol.
   // If you change them, update the receiver (PC side) too.
