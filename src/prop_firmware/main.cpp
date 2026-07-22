@@ -147,6 +147,18 @@ void sendUDP(const String &tag, long value) {
 // board over the network - the only way back is a tap on the pendulum, which
 // the IMU detects on its own while the rest of the chip is powered down.
 void goToSleep() {
+  // Deep sleep cannot run over USB. When the CPU/radio power down, the USB link
+  // drops and the USB peripheral immediately RESETS the chip (reset reason
+  // ESP_RST_USB) - so the board just reboots instead of staying asleep. That is
+  // what made sleep look "broken" during USB testing. Refuse to sleep while on
+  // USB (battery reads 101 = charging, 102 = USB-only) and say why. Unplug and
+  // run on battery to actually sleep. This matches auto-sleep, which already
+  // skips on USB.
+  if (myCodeCell.BatteryLevelRead() >= 101) {
+    Serial.println(">> On USB - NOT sleeping. Deep sleep only works on BATTERY. Unplug the USB cable to sleep.");
+    return;
+  }
+
   // Only notify Max if we are actually online. When we bounce straight back to
   // sleep after a stray wake tap (see listenForWakeTaps), Wi-Fi isn't up yet.
   if (WiFi.status() == WL_CONNECTED) {
