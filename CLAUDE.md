@@ -174,41 +174,35 @@ Rehearsals do not need every pendulum awake the whole time. The firmware
 deep-sleeps a board after a period with no movement, and Ableton can also put
 boards to sleep on demand.
 
-**Waking is always physical: tap the pendulum and give it a swing.** Deep sleep
-powers the Wi-Fi radio down, so no network message can reach a sleeping board —
-this is a hardware fact, not a missing feature. The BNO085 stays awake on its
-own tiny power budget watching for a tap, and pulls the ESP32 back up when it
-feels one. Waking is a full reboot, so expect Wi-Fi to reconnect in a few
-seconds and the IMU to need its usual 10–30 s to settle.
+**Waking is always physical: tap the pendulum.** Deep sleep powers the Wi-Fi
+radio down, so no network message can reach a sleeping board — this is a
+hardware fact, not a missing feature. The BNO085 stays awake on its own tiny
+power budget watching for a tap, and pulls the ESP32 back up when it feels one.
+A single tap wakes it: the board reboots straight through `setup()`, reconnects
+to Wi-Fi in a few seconds and resumes streaming (the IMU still needs its usual
+10–30 s to settle). Nothing gates the wake.
 
-The IMU wakes on **any single tap**, which is far too sensitive for a hanging
-diabolo — residual sway, the USB cable, or setting it down all register as taps
-and would otherwise reboot the board over and over (it looks like the board
-keeps "restarting"). Two defences work together:
+`goToSleep()` waits until the board has been still (no taps) for a moment before
+sleeping, so it does not enter sleep mid-tap. `MOTION_TAP_DETECTOR` is OR'd into
+the `Init()` mask only to feed that stillness check — it is never streamed as a
+channel.
 
-1. **Drain before sleeping.** `goToSleep()` services the IMU for ~120 ms so no
-   report is left pending on the wake line (GPIO7); a pending report holds that
-   line low and makes the board wake itself the instant it sleeps.
-2. **Require a few taps to actually wake.** On wake the board does *not* come up
-   immediately — `listenForWakeTaps()` counts taps (`MOTION_TAP_DETECTOR`) for
-   `wakeListenMs` and only stays awake after `wakeTapsNeeded` of them. One stray
-   tap never reaches the count, so the board goes **straight back to sleep**
-   before Wi-Fi is ever brought up and never reappears in Max.
+### Sleep only works on battery — never over USB
 
-In practice: to wake a board, **tap it a few times** (a firm double/triple tap
-over about a second). Because waking is a full reboot that takes a second or
-two, tapping several times is what reliably lands taps inside the listening
-window. Both knobs are tunable `#define`s near the top of `main.cpp`
-(`wakeListenMs`, `wakeTapsNeeded`).
+This is the big gotcha. **Deep sleep and USB cannot coexist on the ESP32-C6.**
+When the CPU/radio power down, the USB link drops and the USB peripheral
+immediately *resets* the chip (`esp_reset_reason()` → `ESP_RST_USB`), so the
+board reboots a second or two later instead of staying asleep. During bring-up
+this looked exactly like "it sleeps then wakes itself" — but it was the cable,
+not the firmware.
 
-`MOTION_TAP_DETECTOR` is OR'd into the `Init()` mask purely to feed this wake
-logic — it is never streamed as a channel.
-
-Auto-sleep is **skipped while the board is on USB** (battery reads 101 or 102),
-so it never sleeps out from under you while flashing or debugging. Note that a
-manual `all_sleep` command sleeps even on USB — and deep sleep is unreliable
-over USB, so test sleep/wake **on battery**, using the serial monitor only to
-watch the `>> Sleeping` / `>> Woke from a tap` messages.
+So both auto-sleep **and** a manual `all_sleep` command are **skipped while on
+USB** (battery reads 101 = charging, 102 = USB-only); `goToSleep()` prints
+`>> On USB - NOT sleeping...` and returns. **Test sleep/wake on battery**, with
+the USB cable unplugged. You cannot watch the serial monitor at the same time
+(no USB = no serial), so judge it by the LED (dark = asleep) and by whether the
+board's data reappears in Max after a tap. Plugging USB back in always reboots
+the board, which is a reliable way to force it awake.
 
 ### Commands from Max to the boards
 

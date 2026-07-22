@@ -119,20 +119,11 @@ const float motionThresholdGyro = 10.0;  // deg/s
 uint16_t idleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES;
 unsigned long lastMotionTime = 0;
 
-// --- WAKE-ON-DOUBLE-TAP -----------------------------------------------------
-// The IMU wakes the board on ANY single tap, so one stray knock (residual sway,
-// the USB cable, someone brushing past) would reboot it and it looks like the
-// board keeps restarting itself. To stop that, when the board wakes it does NOT
-// come up straight away: it listens for you to keep tapping. Only if it counts
-// wakeTapsNeeded taps within wakeListenMs does it stay awake and reconnect;
-// otherwise it goes right back to sleep.
-//
-// So: to wake a board, TAP IT A FEW TIMES (a firm double/triple tap over about a
-// second). One accidental tap is ignored. Because waking is a full reboot that
-// takes a second or two, tapping several times is what reliably lands taps
-// inside the listening window.
-const unsigned long wakeListenMs = 4000;  // how long to listen for wake taps
-const int wakeTapsNeeded = 2;             // taps within the window that confirm a wake
+// --- WAKING -----------------------------------------------------------------
+// A single tap wakes the board: the IMU pulls the ESP32 out of deep sleep and it
+// reboots into setup(), reconnects to Wi-Fi and resumes streaming. Nothing gates
+// the wake - the earlier "self-waking" was the USB cable resetting the chip, not
+// stray taps, and that only happens on USB (where we now refuse to sleep at all).
 
 void sendUDP(const String &tag, long value) {
   Udp.beginPacket(pc_ip, port);
@@ -159,8 +150,8 @@ void goToSleep() {
     return;
   }
 
-  // Only notify Max if we are actually online. When we bounce straight back to
-  // sleep after a stray wake tap (see listenForWakeTaps), Wi-Fi isn't up yet.
+  // Only notify Max if we are actually online (we always are when a real sleep
+  // command arrives, but guard anyway).
   if (WiFi.status() == WL_CONNECTED) {
     sendUDP(tagSleep, 1);  // tell Max this device is going down on purpose
   }
@@ -188,34 +179,6 @@ void goToSleep() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   myCodeCell.SleepTapTrigger();  // never returns; wakes as a fresh boot
-}
-
-// Called once at boot, but only when we woke from deep sleep. The wake itself
-// was one tap; here we require the user to keep tapping (wakeTapsNeeded taps
-// within wakeListenMs) to prove the wake was deliberate. A single stray tap
-// never reaches the count, so the board just goes back to sleep - it no longer
-// reboots itself on every accidental knock. Returns true to stay awake.
-bool listenForWakeTaps() {
-  Serial.println(">> Woke up. Tap a few more times to keep it awake...");
-  unsigned long start = millis();
-  int taps = 0;
-  while (millis() - start < wakeListenMs) {
-    if (myCodeCell.Run(50)) {
-      if (myCodeCell.Motion_TapDetectorRead()) {
-        taps++;
-        Serial.print(">> wake tap ");
-        Serial.print(taps);
-        Serial.print("/");
-        Serial.println(wakeTapsNeeded);
-        if (taps >= wakeTapsNeeded) {
-          Serial.println(">> Confirmed - staying awake.");
-          return true;
-        }
-      }
-    }
-  }
-  Serial.println(">> Not enough taps - going back to sleep.");
-  return false;
 }
 
 // Store the idle timeout in flash so it survives sleeping, reboots and
@@ -374,19 +337,11 @@ void setup() {
   prefs.begin("osc", false);
   idleTimeoutMinutes = prefs.getUShort("timeout", DEFAULT_IDLE_TIMEOUT_MINUTES);
 
-  // SENSOR_PROFILE picks which sensors stream; MOTION_TAP_DETECTOR is added so
-  // the board can count wake taps (see listenForWakeTaps). It is not streamed as
-  // a channel - it only feeds the wake logic.
+  // SENSOR_PROFILE picks which sensors stream; MOTION_TAP_DETECTOR is added only
+  // so goToSleep() can tell when the board is still before sleeping. It is not
+  // streamed as a channel. Waking is automatic: a tap reboots straight through
+  // this setup and reconnects to Wi-Fi below - nothing gates it.
   myCodeCell.Init(SENSOR_PROFILE | MOTION_TAP_DETECTOR);
-
-  // If we woke from deep sleep, require a deliberate few taps before spending a
-  // couple of seconds connecting to Wi-Fi. A single stray tap sends us straight
-  // back to sleep here, so the board no longer reboots itself on its own. On a
-  // normal power-up (flashing, plugging in the battery) WakeUpCheck() is false,
-  // so this is skipped and the board boots straight through.
-  if (myCodeCell.WakeUpCheck() && !listenForWakeTaps()) {
-    goToSleep();  // never returns
-  }
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
