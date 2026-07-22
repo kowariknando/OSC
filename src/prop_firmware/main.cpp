@@ -12,14 +12,38 @@
 CodeCell myCodeCell;
 WiFiUDP Udp;
 
+// --- PER-DEVICE SENSOR PROFILE (defined in wifi_configs.h, per physical prop) ---
+// Only the sensors listed here are powered and fused on the board. Fewer sensors
+// => less heat and less WiFi traffic. Each channel below is also gated on its
+// flag, so disabled sensors are never read or sent.
+// Example, for a prop that only drives the gyro plugin:
+//   #define SENSOR_PROFILE (MOTION_GYRO)
+// If wifi_configs.h does not define it, we fall back to the full set (the old
+// behaviour), so existing devices keep working unchanged.
+#ifndef SENSOR_PROFILE
+#define SENSOR_PROFILE (LIGHT + MOTION_ACCELEROMETER + MOTION_STATE \
+                        + MOTION_GYRO + MOTION_MAGNETOMETER + MOTION_ROTATION \
+                        + MOTION_STEP_COUNTER + MOTION_ACTIVITY \
+                        + MOTION_GRAVITY + MOTION_LINEAR_ACC)
+#endif
+
+// --- UDP PORT (per device, so independent single-variable plugins don't clash) ---
+// Two Max `udpreceive` objects cannot share a port in one Live set, so each
+// single-variable plugin listens on its own port. Set this per prop to match the
+// plugin that should receive it (see max/single/README.md). Defaults to 9999
+// (the old shared port) when not defined.
+#ifndef UDP_PORT
+#define UDP_PORT 9999
+#endif
+
 const char* ssid = WIFI_NAME;
 const char* password = WIFI_PASS;
 const char* pc_ip = WIFI_IP;
-const int port = 9999;
+const int port = UDP_PORT;
 
 // Tags built once, based on DEVICE_NAME
 String tagInertia, tagBat, tagProx, tagState, tagAct, tagGyro, tagComp, tagRot, tagSteps;
-String tagLight, tagGrav, tagLin;
+String tagLight, tagGrav, tagLin, tagHead;
 
 float ax, ay, az;
 float filtered_magnitude = 0;
@@ -47,6 +71,9 @@ int lastGyro = -1;
 // --- MAGNETOMETER (magnitude, used as "compass") ---
 const float compMax = 100.0;
 int lastComp = -1;
+
+// --- COMPASS HEADING (atan2 of the magnetometer, 0-360 deg -> 0-127) ---
+int lastHead = -1;
 
 // --- ROTATION (yaw) ---
 int lastRot = -1;
@@ -91,16 +118,15 @@ void setup() {
   tagAct     = String(DEVICE_NAME) + "_act";
   tagGyro    = String(DEVICE_NAME) + "_gyro";
   tagComp    = String(DEVICE_NAME) + "_comp";
+  tagHead    = String(DEVICE_NAME) + "_head";
   tagRot     = String(DEVICE_NAME) + "_rot";
   tagSteps   = String(DEVICE_NAME) + "_steps";
   tagLight   = String(DEVICE_NAME) + "_light";
   tagGrav    = String(DEVICE_NAME) + "_grav";
   tagLin     = String(DEVICE_NAME) + "_lin";
 
-  myCodeCell.Init(LIGHT + MOTION_ACCELEROMETER + MOTION_STATE
-                  + MOTION_GYRO + MOTION_MAGNETOMETER + MOTION_ROTATION
-                  + MOTION_STEP_COUNTER + MOTION_ACTIVITY
-                  + MOTION_GRAVITY + MOTION_LINEAR_ACC);
+  // Only powers the sensors in SENSOR_PROFILE (see wifi_configs.h / the default above).
+  myCodeCell.Init(SENSOR_PROFILE);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -122,102 +148,140 @@ void setup() {
 void loop() {
   if (myCodeCell.Run(50)) {
 
-    // ---- INERTIA (accelerometer, smoothed magnitude) ----
-    myCodeCell.Motion_AccelerometerRead(ax, ay, az);
-    float current_magnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
-    filtered_magnitude = (current_magnitude * smoothing_factor) + (filtered_magnitude * (1.0 - smoothing_factor));
+    // Each block is gated on its SENSOR_PROFILE flag. Because SENSOR_PROFILE is a
+    // compile-time constant, the compiler folds these tests away and drops the
+    // code for any sensor this device does not use — no read, no UDP send.
 
-    int inertiaValue = map((long)(filtered_magnitude * 10), (long)(min_reading * 10), (long)(max_reading * 10), 0, 127);
-    inertiaValue = constrain(inertiaValue, 0, 127);
-    if (inertiaValue != lastInertia) {
-      sendUDP(tagInertia, inertiaValue);
-      lastInertia = inertiaValue;
+    // ---- INERTIA (accelerometer, smoothed magnitude) ----
+    if (SENSOR_PROFILE & MOTION_ACCELEROMETER) {
+      myCodeCell.Motion_AccelerometerRead(ax, ay, az);
+      float current_magnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
+      filtered_magnitude = (current_magnitude * smoothing_factor) + (filtered_magnitude * (1.0 - smoothing_factor));
+
+      int inertiaValue = map((long)(filtered_magnitude * 10), (long)(min_reading * 10), (long)(max_reading * 10), 0, 127);
+      inertiaValue = constrain(inertiaValue, 0, 127);
+      if (inertiaValue != lastInertia) {
+        sendUDP(tagInertia, inertiaValue);
+        lastInertia = inertiaValue;
+      }
     }
 
     // ---- PROXIMITY ----
-    uint16_t proxRaw = myCodeCell.Light_ProximityRead();
-    int proxValue = constrain((int)map(proxRaw, 0, proxMax, 0, 127), 0, 127);
-    if (proxValue != lastProx) {
-      sendUDP(tagProx, proxValue);
-      lastProx = proxValue;
+    if (SENSOR_PROFILE & LIGHT) {
+      uint16_t proxRaw = myCodeCell.Light_ProximityRead();
+      int proxValue = constrain((int)map(proxRaw, 0, proxMax, 0, 127), 0, 127);
+      if (proxValue != lastProx) {
+        sendUDP(tagProx, proxValue);
+        lastProx = proxValue;
+      }
     }
 
     // ---- STATE: 1=Table, 2=Stationary, 3=Stable, 4=Motion ----
-    int state = myCodeCell.Motion_StateRead();
-    if (state != lastState) {
-      sendUDP(tagState, state);
-      lastState = state;
+    if (SENSOR_PROFILE & MOTION_STATE) {
+      int state = myCodeCell.Motion_StateRead();
+      if (state != lastState) {
+        sendUDP(tagState, state);
+        lastState = state;
+      }
     }
 
     // ---- ACTIVITY ----
-    int act = myCodeCell.Motion_ActivityRead();
-    if (act != lastAct) {
-      sendUDP(tagAct, act);
-      lastAct = act;
+    if (SENSOR_PROFILE & MOTION_ACTIVITY) {
+      int act = myCodeCell.Motion_ActivityRead();
+      if (act != lastAct) {
+        sendUDP(tagAct, act);
+        lastAct = act;
+      }
     }
 
     // ---- GYROSCOPE (magnitude) ----
-    float gx, gy, gz;
-    myCodeCell.Motion_GyroRead(gx, gy, gz);
-    float gyroMag = sqrt((gx * gx) + (gy * gy) + (gz * gz));
-    int gyroValue = constrain((int)map((long)gyroMag, 0, (long)gyroMax, 0, 127), 0, 127);
-    if (gyroValue != lastGyro) {
-      sendUDP(tagGyro, gyroValue);
-      lastGyro = gyroValue;
+    if (SENSOR_PROFILE & MOTION_GYRO) {
+      float gx, gy, gz;
+      myCodeCell.Motion_GyroRead(gx, gy, gz);
+      float gyroMag = sqrt((gx * gx) + (gy * gy) + (gz * gz));
+      int gyroValue = constrain((int)map((long)gyroMag, 0, (long)gyroMax, 0, 127), 0, 127);
+      if (gyroValue != lastGyro) {
+        sendUDP(tagGyro, gyroValue);
+        lastGyro = gyroValue;
+      }
     }
 
-    // ---- MAGNETOMETER (magnitude, used as "compass") ----
-    float mx, my, mz;
-    myCodeCell.Motion_MagnetometerRead(mx, my, mz);
-    float compMag = sqrt((mx * mx) + (my * my) + (mz * mz));
-    int compValue = constrain((int)map((long)compMag, 0, (long)compMax, 0, 127), 0, 127);
-    if (compValue != lastComp) {
-      sendUDP(tagComp, compValue);
-      lastComp = compValue;
+    // ---- MAGNETOMETER: magnitude ("_comp") + digital-compass heading ("_head") ----
+    if (SENSOR_PROFILE & MOTION_MAGNETOMETER) {
+      float mx, my, mz;
+      myCodeCell.Motion_MagnetometerRead(mx, my, mz);
+
+      // Field magnitude -> _comp (kept for the original single compass plugin)
+      float compMag = sqrt((mx * mx) + (my * my) + (mz * mz));
+      int compValue = constrain((int)map((long)compMag, 0, (long)compMax, 0, 127), 0, 127);
+      if (compValue != lastComp) {
+        sendUDP(tagComp, compValue);
+        lastComp = compValue;
+      }
+
+      // Compass heading (atan2), 0-360 deg -> 0-127. See CodeCell "Digital Compass" docs.
+      // 0 = North, ~32 = East, ~64 = South, ~96 = West.
+      float heading = atan2(my, mx) * (180.0 / M_PI);
+      if (heading < 0) heading += 360.0;
+      int headValue = constrain((int)map((long)heading, 0, 360, 0, 127), 0, 127);
+      if (headValue != lastHead) {
+        sendUDP(tagHead, headValue);
+        lastHead = headValue;
+      }
     }
 
     // ---- ROTATION (yaw, -180..180 -> 0..127) ----
-    float roll, pitch, yaw;
-    myCodeCell.Motion_RotationRead(roll, pitch, yaw);
-    int rotValue = constrain((int)map((long)yaw, -180, 180, 0, 127), 0, 127);
-    if (rotValue != lastRot) {
-      sendUDP(tagRot, rotValue);
-      lastRot = rotValue;
+    if (SENSOR_PROFILE & MOTION_ROTATION) {
+      float roll, pitch, yaw;
+      myCodeCell.Motion_RotationRead(roll, pitch, yaw);
+      int rotValue = constrain((int)map((long)yaw, -180, 180, 0, 127), 0, 127);
+      if (rotValue != lastRot) {
+        sendUDP(tagRot, rotValue);
+        lastRot = rotValue;
+      }
     }
 
     // ---- STEPS ----
-    uint16_t steps = myCodeCell.Motion_StepCounterRead();
-    if (steps != lastSteps) {
-      sendUDP(tagSteps, (long)steps);
-      lastSteps = steps;
+    if (SENSOR_PROFILE & MOTION_STEP_COUNTER) {
+      uint16_t steps = myCodeCell.Motion_StepCounterRead();
+      if (steps != lastSteps) {
+        sendUDP(tagSteps, (long)steps);
+        lastSteps = steps;
+      }
     }
 
     // ---- AMBIENT LIGHT ----
-    uint16_t lightRaw = myCodeCell.Light_AmbientRead();
-    int lightValue = constrain((int)map(lightRaw, 0, lightMax, 0, 127), 0, 127);
-    if (lightValue != lastLight) {
-      sendUDP(tagLight, lightValue);
-      lastLight = lightValue;
+    if (SENSOR_PROFILE & LIGHT) {
+      uint16_t lightRaw = myCodeCell.Light_AmbientRead();
+      int lightValue = constrain((int)map(lightRaw, 0, lightMax, 0, 127), 0, 127);
+      if (lightValue != lastLight) {
+        sendUDP(tagLight, lightValue);
+        lastLight = lightValue;
+      }
     }
 
     // ---- GRAVITY (magnitude, ~9.8 always, changes with orientation) ----
-    float grx, gry, grz;
-    myCodeCell.Motion_GravityRead(grx, gry, grz);
-    float gravMag = sqrt((grx * grx) + (gry * gry) + (grz * grz));
-    int gravValue = constrain((int)map((long)(gravMag * 10), 0, (long)(gravMax * 10), 0, 127), 0, 127);
-    if (gravValue != lastGrav) {
-      sendUDP(tagGrav, gravValue);
-      lastGrav = gravValue;
+    if (SENSOR_PROFILE & MOTION_GRAVITY) {
+      float grx, gry, grz;
+      myCodeCell.Motion_GravityRead(grx, gry, grz);
+      float gravMag = sqrt((grx * grx) + (gry * gry) + (grz * grz));
+      int gravValue = constrain((int)map((long)(gravMag * 10), 0, (long)(gravMax * 10), 0, 127), 0, 127);
+      if (gravValue != lastGrav) {
+        sendUDP(tagGrav, gravValue);
+        lastGrav = gravValue;
+      }
     }
 
     // ---- LINEAR ACCELERATION (magnitude, "net" motion without gravity) ----
-    float lx, ly, lz;
-    myCodeCell.Motion_LinearAccRead(lx, ly, lz);
-    float linMag = sqrt((lx * lx) + (ly * ly) + (lz * lz));
-    int linValue = constrain((int)map((long)(linMag * 10), 0, (long)(linMax * 10), 0, 127), 0, 127);
-    if (linValue != lastLin) {
-      sendUDP(tagLin, linValue);
-      lastLin = linValue;
+    if (SENSOR_PROFILE & MOTION_LINEAR_ACC) {
+      float lx, ly, lz;
+      myCodeCell.Motion_LinearAccRead(lx, ly, lz);
+      float linMag = sqrt((lx * lx) + (ly * ly) + (lz * lz));
+      int linValue = constrain((int)map((long)(linMag * 10), 0, (long)(linMax * 10), 0, 127), 0, 127);
+      if (linValue != lastLin) {
+        sendUDP(tagLin, linValue);
+        lastLin = linValue;
+      }
     }
 
     // ---- BATTERY (every ~5s) ----
