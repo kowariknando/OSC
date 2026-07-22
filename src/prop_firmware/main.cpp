@@ -117,6 +117,22 @@ const float motionThresholdGyro = 10.0;  // deg/s
 uint16_t idleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES;
 unsigned long lastMotionTime = 0;
 
+// --- WAKE CONFIRMATION ------------------------------------------------------
+// The IMU wakes the board on ANY single tap. A hanging diabolo catches
+// accidental taps all the time (residual sway after you let go, the USB cable,
+// being set down), and each one would otherwise trigger a full reboot that
+// looks like the board "restarting" itself. So after a tap wakes us, we watch
+// the motion sensors briefly and only stay awake if the board is REALLY being
+// moved. A stray tap goes straight back to sleep without reconnecting Wi-Fi.
+//
+// In practice: to wake a board, tap it and give it a small swing/shake. Raise
+// wakeMotionThreshold (harder to wake, fewer accidental wakes) or lower it
+// (easier to wake) to taste.
+const unsigned long wakeConfirmMs = 2000;   // how long to watch after a wake tap
+const float wakeMotionThreshold = 2.0;      // m/s^2 away from rest (accel/linear)
+const float wakeGyroThreshold = 30.0;       // deg/s of spin
+const int wakeMotionHitsNeeded = 4;         // this many "moving" samples confirms
+
 void sendUDP(const String &tag, long value) {
   Udp.beginPacket(pc_ip, port);
   Udp.print(tag);
@@ -130,14 +146,71 @@ void sendUDP(const String &tag, long value) {
 // board over the network - the only way back is a tap on the pendulum, which
 // the IMU detects on its own while the rest of the chip is powered down.
 void goToSleep() {
-  sendUDP(tagSleep, 1);  // tell Max this device is going down on purpose
-  Serial.println(">> Sleeping. Tap the pendulum to wake it up.");
+  // Only notify Max if we are actually online. When we bounce straight back to
+  // sleep after a stray wake tap (see confirmWakeMotion), Wi-Fi isn't up yet.
+  if (WiFi.status() == WL_CONNECTED) {
+    sendUDP(tagSleep, 1);  // tell Max this device is going down on purpose
+  }
+  Serial.println(">> Sleeping. Tap the pendulum (and give it a swing) to wake it.");
   Serial.flush();
   delay(50);  // let the last packet leave before the radio dies
 
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   myCodeCell.SleepTapTrigger();  // never returns; wakes as a fresh boot
+}
+
+// Called once at boot, but only when we woke from deep sleep via a tap. Watches
+// whichever motion sensor this device has enabled and returns true only if the
+// board is genuinely being moved. This is what turns "wakes on any tap" into
+// "wakes when you actually pick it up and use it" - and filters out the stray
+// taps that were making the board look like it kept restarting.
+bool confirmWakeMotion() {
+  // Use whatever motion sensor this prop actually powers (SENSOR_PROFILE).
+  bool useAccel = (SENSOR_PROFILE & MOTION_ACCELEROMETER) != 0;
+  bool useGyro  = (SENSOR_PROFILE & MOTION_GYRO) != 0;
+  bool useLin   = (SENSOR_PROFILE & MOTION_LINEAR_ACC) != 0;
+
+  // A prop with no motion sensor (e.g. compass-only) can't confirm motion, so
+  // we don't gate it - it just wakes.
+  if (!useAccel && !useGyro && !useLin) return true;
+
+  Serial.println(">> Woke from a tap - checking for real motion...");
+  unsigned long start = millis();
+  int hits = 0;
+  while (millis() - start < wakeConfirmMs) {
+    if (myCodeCell.Run(50)) {
+      bool moved = false;
+
+      // Raw accelerometer is ready immediately (the fused outputs need 10-30 s).
+      // It reads ~9.8 when still, so real handling pushes it well off that.
+      if (useAccel) {
+        float x, y, z;
+        myCodeCell.Motion_AccelerometerRead(x, y, z);
+        float mag = sqrt((x * x) + (y * y) + (z * z));
+        if (fabs(mag - 9.8) > wakeMotionThreshold) moved = true;
+      }
+      if (!moved && useGyro) {
+        float x, y, z;
+        myCodeCell.Motion_GyroRead(x, y, z);
+        float mag = sqrt((x * x) + (y * y) + (z * z));
+        if (mag > wakeGyroThreshold) moved = true;
+      }
+      if (!moved && useLin) {
+        float x, y, z;
+        myCodeCell.Motion_LinearAccRead(x, y, z);
+        float mag = sqrt((x * x) + (y * y) + (z * z));
+        if (mag > wakeMotionThreshold) moved = true;
+      }
+
+      if (moved && ++hits >= wakeMotionHitsNeeded) {
+        Serial.println(">> Real motion - waking up fully.");
+        return true;
+      }
+    }
+  }
+  Serial.println(">> No real motion - that was a stray tap, going back to sleep.");
+  return false;
 }
 
 // Store the idle timeout in flash so it survives sleeping, reboots and
@@ -267,6 +340,15 @@ void setup() {
 
   // Only powers the sensors in SENSOR_PROFILE (see wifi_configs.h / the default above).
   myCodeCell.Init(SENSOR_PROFILE);
+
+  // If a tap just woke us from deep sleep, make sure it was deliberate before we
+  // spend a few seconds connecting to Wi-Fi. A stray tap sends us right back to
+  // sleep here, so the board no longer appears to "restart" on its own. On a
+  // normal power-up (flashing, plugging in the battery) WakeUpCheck() is false,
+  // so this is skipped and the board boots straight through.
+  if (myCodeCell.WakeUpCheck() && !confirmWakeMotion()) {
+    goToSleep();  // never returns
+  }
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
