@@ -8,7 +8,10 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <WiFiUdp.h>
+#include <Preferences.h>
 #include <math.h>
+#include "esp_sleep.h"
+#include "esp_system.h"
 
 CodeCell myCodeCell;
 WiFiUDP Udp;
@@ -45,7 +48,8 @@ const int port = UDP_PORT;
 
 // Tags built once, based on DEVICE_NAME
 String tagInertia, tagBat, tagProx, tagState, tagAct, tagGyro, tagComp, tagRot, tagSteps;
-String tagLight, tagGrav, tagLin, tagHead, tagSleep, tagTimeout;
+String tagLight, tagGrav, tagLin, tagSleep, tagTimeout, tagHead;
+String tagRoll, tagPitch, tagYaw, tagRvec;
 
 // Incoming command tags: "<DEVICE_NAME>_x" targets this board, "all_x" targets every board.
 String cmdSleepMine, cmdSleepAll, cmdTimeoutMine, cmdTimeoutAll;
@@ -83,6 +87,9 @@ int lastHead = -1;
 // --- ROTATION (yaw) ---
 int lastRot = -1;
 
+// --- ROLL / PITCH / YAW + rotation vector total (for the roll-xyz plugin) ---
+int lastRoll = -1, lastPitch = -1, lastYaw = -1, lastRvec = -1;
+
 // --- STEPS ---
 uint16_t lastSteps = 0;
 
@@ -101,6 +108,30 @@ int lastLin = -1;
 // --- BATTERY ---
 unsigned long lastBatteryTime = 0;
 const unsigned long batteryInterval = 5000;
+uint16_t lastBatLevel = 100;  // 101 = charging, 102 = USB only
+
+// --- AUTO-SLEEP -------------------------------------------------------------
+// After this many minutes without movement the board deep-sleeps. Tap the
+// pendulum to wake it. 0 = never auto-sleep (use that during a performance).
+//
+// This is only the FACTORY DEFAULT, used the first time a board ever boots.
+// After that the value lives in flash and is changed from Ableton with
+// "all_timeout <minutes>" - no reflashing. See handleIncomingUDP().
+#define DEFAULT_IDLE_TIMEOUT_MINUTES 10
+
+// How much movement counts as "still being used". Raise these if a hanging,
+// perfectly still pendulum never sleeps; lower them if it sleeps mid-swing.
+const float motionThresholdLin = 0.5;    // m/s^2, gravity already removed
+const float motionThresholdGyro = 10.0;  // deg/s
+
+uint16_t idleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES;
+unsigned long lastMotionTime = 0;
+
+// --- WAKING -----------------------------------------------------------------
+// A single tap wakes the board: the IMU pulls the ESP32 out of deep sleep and it
+// reboots into setup(), reconnects to Wi-Fi and resumes streaming. Nothing gates
+// the wake - the earlier "self-waking" was the USB cable resetting the chip, not
+// stray taps, and that only happens on USB (where we now refuse to sleep at all).
 
 uint16_t lastBatLevel = 100;  // 101 = charging, 102 = USB only
 
@@ -298,6 +329,7 @@ bool pollMotionAwake() {
 
 void setup() {
   Serial.begin(115200);
+  delay(200);          // let USB CDC re-enumerate so this line isn't lost
 
   // NOTE: these suffixes are part of the UDP protocol.
   // If you change them, update the receiver (PC side) too.
@@ -310,13 +342,17 @@ void setup() {
   tagComp    = String(DEVICE_NAME) + "_comp";
   tagHead    = String(DEVICE_NAME) + "_head";
   tagRot     = String(DEVICE_NAME) + "_rot";
+  tagRoll    = String(DEVICE_NAME) + "_roll";
+  tagPitch   = String(DEVICE_NAME) + "_pitch";
+  tagYaw     = String(DEVICE_NAME) + "_yaw";
+  tagRvec    = String(DEVICE_NAME) + "_rvec";
   tagSteps   = String(DEVICE_NAME) + "_steps";
   tagLight   = String(DEVICE_NAME) + "_light";
   tagGrav    = String(DEVICE_NAME) + "_grav";
   tagLin     = String(DEVICE_NAME) + "_lin";
-
   tagSleep   = String(DEVICE_NAME) + "_sleep";
   tagTimeout = String(DEVICE_NAME) + "_timeout";
+
 
   cmdSleepMine   = String(DEVICE_NAME) + "_sleep";
   cmdSleepAll    = "all_sleep";
@@ -385,6 +421,15 @@ void setup() {
 void loop() {
   if (myCodeCell.Run(50)) {
 
+    // Set true by whichever motion sensor sees real movement this pass. Because
+    // the sensor blocks below are gated on SENSOR_PROFILE, the motion check has
+    // to live INSIDE each block (the magnitudes are scoped there) rather than
+    // reading linMag/gyroMag afterwards. A prop with none of accelerometer /
+    // gyro / linear enabled (e.g. a compass-only prop) has no motion signal, so
+    // it will not auto-sleep on movement - set its timeout to 0 or sleep it from
+    // Ableton instead.
+    bool moving = false;
+
     // Each block is gated on its SENSOR_PROFILE flag. Because SENSOR_PROFILE is a
     // compile-time constant, the compiler folds these tests away and drops the
     // code for any sensor this device does not use — no read, no UDP send.
@@ -394,6 +439,10 @@ void loop() {
       myCodeCell.Motion_AccelerometerRead(ax, ay, az);
       float current_magnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
       filtered_magnitude = (current_magnitude * smoothing_factor) + (filtered_magnitude * (1.0 - smoothing_factor));
+
+      // Accelerometer magnitude sits at ~9.8 (gravity) when still; any real
+      // movement pushes it away from that baseline.
+      if (fabs(current_magnitude - min_reading) > motionThresholdLin) moving = true;
 
       int inertiaValue = map((long)(filtered_magnitude * 10), (long)(min_reading * 10), (long)(max_reading * 10), 0, 127);
       inertiaValue = constrain(inertiaValue, 0, 127);
@@ -467,15 +516,30 @@ void loop() {
       }
     }
 
-    // ---- ROTATION (yaw, -180..180 -> 0..127) ----
+    // ---- ROTATION: yaw ("_rot") + roll/pitch/yaw + vector total (roll-xyz) ----
     if (SENSOR_PROFILE & MOTION_ROTATION) {
       float roll, pitch, yaw;
       myCodeCell.Motion_RotationRead(roll, pitch, yaw);
+
+      // yaw -> _rot (kept for the existing plugins)
       int rotValue = constrain((int)map((long)yaw, -180, 180, 0, 127), 0, 127);
       if (rotValue != lastRot) {
         sendUDP(tagRot, rotValue);
         lastRot = rotValue;
       }
+
+      // roll / pitch / yaw as separate channels, each -180..180 deg -> 0..127
+      int rollV  = constrain((int)map((long)roll,  -180, 180, 0, 127), 0, 127);
+      int pitchV = constrain((int)map((long)pitch, -180, 180, 0, 127), 0, 127);
+      int yawV   = rotValue; // same mapping as _rot
+      if (rollV  != lastRoll)  { sendUDP(tagRoll,  rollV);  lastRoll  = rollV; }
+      if (pitchV != lastPitch) { sendUDP(tagPitch, pitchV); lastPitch = pitchV; }
+      if (yawV   != lastYaw)   { sendUDP(tagYaw,   yawV);   lastYaw   = yawV; }
+
+      // vector total = magnitude of (roll,pitch,yaw), ~0..312 deg -> 0..127
+      float rvec = sqrt((roll * roll) + (pitch * pitch) + (yaw * yaw));
+      int rvecV = constrain((int)map((long)rvec, 0, 312, 0, 127), 0, 127);
+      if (rvecV != lastRvec) { sendUDP(tagRvec, rvecV); lastRvec = rvecV; }
     }
 
     // ---- STEPS ----
@@ -514,6 +578,7 @@ void loop() {
       float lx, ly, lz;
       myCodeCell.Motion_LinearAccRead(lx, ly, lz);
       float linMag = sqrt((lx * lx) + (ly * ly) + (lz * lz));
+      if (linMag > motionThresholdLin) moving = true;
       int linValue = constrain((int)map((long)(linMag * 10), 0, (long)(linMax * 10), 0, 127), 0, 127);
       if (linValue != lastLin) {
         sendUDP(tagLin, linValue);
@@ -526,6 +591,12 @@ void loop() {
     if (linMag > motionThresholdLin || gyroMag > motionThresholdGyro) {
         lastMotionTime = millis();
       }
+    }
+
+    // ---- IS THE PENDULUM STILL BEING USED? ----
+    // Any enabled motion sensor that saw movement this pass resets the countdown.
+    if (moving) {
+      lastMotionTime = millis();
     }
 
     // ---- BATTERY (every ~5s) ----
