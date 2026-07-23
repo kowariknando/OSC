@@ -1,5 +1,5 @@
 autowatch = 1;
-outlets = 6; // 0-4 = five independently-smoothed lanes of the PAN | 5 = battery
+outlets = 8; // 0-4 = five independently-smoothed lanes of the PAN | 5 = battery | 6 = sleep | 7 = idle timeout
 
 // ============================================================================
 // infinitecompass.js (multi-mapping) — compass HEADING folded into a jump-free PAN
@@ -26,8 +26,10 @@ var SUFFIX = "head"; // <device>_head
 var NLANES = 5;
 
 var device = "";
-var tag    = "";
-var batTag = "";
+var tag        = "";
+var batTag     = "";
+var sleepTag   = "";   // <device>_sleep    (1 = going to sleep, 0 = awake / just booted)
+var timeoutTag = "";   // <device>_timeout  (current idle timeout in minutes, 0 = off)
 
 var inited = false;
 var laneCoeff   = [];
@@ -60,8 +62,10 @@ function parse(str) {
         if (parts.length < 2) continue;
         var value = parseFloat(parts[1]);
         if (isNaN(value)) continue;
-        if (tag && parts[0] === tag) handle(value);              // heading -> pan
-        else if (batTag && parts[0] === batTag) outlet(5, value); // battery -> outlet 5
+        if (tag && parts[0] === tag) handle(value);                       // heading -> pan
+        else if (batTag && parts[0] === batTag) outlet(5, value);         // battery      -> outlet 5
+        else if (sleepTag && parts[0] === sleepTag) outlet(6, value);     // sleep state  -> outlet 6
+        else if (timeoutTag && parts[0] === timeoutTag) outlet(7, value); // idle timeout -> outlet 7
     }
 }
 
@@ -105,8 +109,10 @@ function setdevice() {
     var a = arrayfromargs(arguments);
     if (a.length && String(a[0]) === "text") a = a.slice(1);
     device = a.length ? String(a[0]) : "";
-    tag    = device + "_" + SUFFIX;   // <device>_head
-    batTag = device + "_bat";
+    tag        = device + "_" + SUFFIX;   // <device>_head
+    batTag     = device + "_bat";
+    sleepTag   = device + "_sleep";
+    timeoutTag = device + "_timeout";
     resetState();
     post("[infpan] Device -> " + device + "   (pan from " + tag + " x" + NLANES + " lanes  +" + batTag + ")\n");
 }
