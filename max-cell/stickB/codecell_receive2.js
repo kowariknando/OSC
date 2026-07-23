@@ -1,5 +1,4 @@
 autowatch = 1;
-outlets = 12; // 0-10: the 11 sensor variables | 11: battery
 
 // ============================================================================
 // codecell_receive2.js
@@ -44,15 +43,19 @@ outlets = 12; // 0-10: the 11 sensor variables | 11: battery
 // ============================================================================
 
 // NOTE: VARLIST is currently unused - channelVar is what drives the parsing.
-var VARLIST = ["inertia","prox","state","act","gyro","comp","rot","steps","light","grav","lin"];
+// 0-10: the 11 sensor variables | 11: battery | 12: sleep state | 13: idle timeout
+var channelVar = ["inertia","prox","state","act","gyro","comp","rot","steps","light","grav","lin","bat","sleep","timeout"];
+
+var NUM_CHANNELS = channelVar.length;
+outlets = NUM_CHANNELS;
 var device = "";
-var channelVar = ["inertia","prox","state","act","gyro","comp","rot","steps","light","grav","lin","bat"];
-var channelTag = ["","","","","","","","","","","",""];
+var channelTag = [];
+for (var initCh = 0; initCh < NUM_CHANNELS; initCh++) channelTag[initCh] = "";
 
 // Channels whose value is a code/count, not a continuous magnitude. These skip
 // all normalisation and pass straight through. Keyed by variable NAME so the
 // behaviour follows the variable even if setvar remaps it to another outlet.
-var PASSTHROUGH = { state: true, act: true, steps: true, bat: true };
+var PASSTHROUGH = { state: true, act: true, steps: true, bat: true, sleep: true, timeout: true };
 
 // ---- tunable parameters ----
 var smoothing  = 0.25;   // one-pole low-pass coefficient (0..1)
@@ -116,7 +119,7 @@ function parseAndOutput(str) {
         var value = parseFloat(parts[1]);
         if (isNaN(value)) continue;
 
-        for (var ch = 0; ch < 12; ch++) {
+        for (var ch = 0; ch < NUM_CHANNELS; ch++) {
             if (channelTag[ch] && tag === channelTag[ch]) {
                 handleChannel(ch, value);
             }
@@ -245,7 +248,7 @@ function anything() {
 // Device / channel wiring (unchanged contract with the .amxd)
 // ---------------------------------------------------------------------------
 function updateAllTags() {
-    for (var ch = 0; ch < 12; ch++) {
+    for (var ch = 0; ch < NUM_CHANNELS; ch++) {   // include sleep (12) and timeout (13)
         if (device && channelVar[ch]) {
             channelTag[ch] = device + "_" + channelVar[ch];
         }
@@ -264,11 +267,11 @@ function setdevice() {
     updateAllTags();
 }
 
-// "setvar <channel 0-11> <inertia/prox/state/act/gyro/comp/rot/steps/light/grav/lin/bat>"
-// Normally fixed per channel (one variable per row), but can be rewired if needed.
+// "setvar <channel 0-13> <inertia/prox/state/act/gyro/comp/rot/steps/light/grav/lin/bat/sleep/timeout>"
+// // Normally fixed per channel (one variable per row), but can be rewired if needed.
 function setvar(ch, name) {
     ch = Math.floor(ch);
-    if (ch >= 0 && ch < 12) {
+    if (ch >= 0 && ch < NUM_CHANNELS) {
         channelVar[ch] = String(name);
         resetChannel(ch); // meaning of this channel changed => forget its range
         updateAllTags();
