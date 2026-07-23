@@ -48,6 +48,7 @@ const int port = UDP_PORT;
 // Tags built once, based on DEVICE_NAME
 String tagInertia, tagBat, tagProx, tagState, tagAct, tagGyro, tagComp, tagRot, tagSteps;
 String tagLight, tagGrav, tagLin, tagSleep, tagTimeout, tagHead;
+String tagRoll, tagPitch, tagYaw, tagRvec;
 
 // Incoming command tags: "<DEVICE_NAME>_x" targets this board, "all_x" targets every board.
 String cmdSleepMine, cmdSleepAll, cmdTimeoutMine, cmdTimeoutAll;
@@ -84,6 +85,9 @@ int lastHead = -1;
 
 // --- ROTATION (yaw) ---
 int lastRot = -1;
+
+// --- ROLL / PITCH / YAW + rotation vector total (for the roll-xyz plugin) ---
+int lastRoll = -1, lastPitch = -1, lastYaw = -1, lastRvec = -1;
 
 // --- STEPS ---
 uint16_t lastSteps = 0;
@@ -324,6 +328,10 @@ void setup() {
   tagComp    = String(DEVICE_NAME) + "_comp";
   tagHead    = String(DEVICE_NAME) + "_head";
   tagRot     = String(DEVICE_NAME) + "_rot";
+  tagRoll    = String(DEVICE_NAME) + "_roll";
+  tagPitch   = String(DEVICE_NAME) + "_pitch";
+  tagYaw     = String(DEVICE_NAME) + "_yaw";
+  tagRvec    = String(DEVICE_NAME) + "_rvec";
   tagSteps   = String(DEVICE_NAME) + "_steps";
   tagLight   = String(DEVICE_NAME) + "_light";
   tagGrav    = String(DEVICE_NAME) + "_grav";
@@ -477,15 +485,30 @@ void loop() {
       }
     }
 
-    // ---- ROTATION (yaw, -180..180 -> 0..127) ----
+    // ---- ROTATION: yaw ("_rot") + roll/pitch/yaw + vector total (roll-xyz) ----
     if (SENSOR_PROFILE & MOTION_ROTATION) {
       float roll, pitch, yaw;
       myCodeCell.Motion_RotationRead(roll, pitch, yaw);
+
+      // yaw -> _rot (kept for the existing plugins)
       int rotValue = constrain((int)map((long)yaw, -180, 180, 0, 127), 0, 127);
       if (rotValue != lastRot) {
         sendUDP(tagRot, rotValue);
         lastRot = rotValue;
       }
+
+      // roll / pitch / yaw as separate channels, each -180..180 deg -> 0..127
+      int rollV  = constrain((int)map((long)roll,  -180, 180, 0, 127), 0, 127);
+      int pitchV = constrain((int)map((long)pitch, -180, 180, 0, 127), 0, 127);
+      int yawV   = rotValue; // same mapping as _rot
+      if (rollV  != lastRoll)  { sendUDP(tagRoll,  rollV);  lastRoll  = rollV; }
+      if (pitchV != lastPitch) { sendUDP(tagPitch, pitchV); lastPitch = pitchV; }
+      if (yawV   != lastYaw)   { sendUDP(tagYaw,   yawV);   lastYaw   = yawV; }
+
+      // vector total = magnitude of (roll,pitch,yaw), ~0..312 deg -> 0..127
+      float rvec = sqrt((roll * roll) + (pitch * pitch) + (yaw * yaw));
+      int rvecV = constrain((int)map((long)rvec, 0, 312, 0, 127), 0, 127);
+      if (rvecV != lastRvec) { sendUDP(tagRvec, rvecV); lastRvec = rvecV; }
     }
 
     // ---- STEPS ----
