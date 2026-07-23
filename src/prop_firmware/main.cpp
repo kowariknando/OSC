@@ -133,25 +133,6 @@ unsigned long lastMotionTime = 0;
 // the wake - the earlier "self-waking" was the USB cable resetting the chip, not
 // stray taps, and that only happens on USB (where we now refuse to sleep at all).
 
-uint16_t lastBatLevel = 100;  // 101 = charging, 102 = USB only
-
-// --- AUTO-SLEEP -------------------------------------------------------------
-// After this many minutes without movement the board deep-sleeps. Tap the
-// pendulum to wake it. 0 = never auto-sleep (use that during a performance).
-//
-// This is only the FACTORY DEFAULT, used the first time a board ever boots.
-// After that the value lives in flash and is changed from Ableton with
-// "all_timeout <minutes>" - no reflashing. See handleIncomingUDP().
-#define DEFAULT_IDLE_TIMEOUT_MINUTES 10
-
-// How much movement counts as "still being used". Raise these if a hanging,
-// perfectly still pendulum never sleeps; lower them if it sleeps mid-swing.
-const float motionThresholdLin = 0.5;    // m/s^2, gravity already removed
-const float motionThresholdGyro = 10.0;  // deg/s
-
-uint16_t idleTimeoutMinutes = DEFAULT_IDLE_TIMEOUT_MINUTES;
-unsigned long lastMotionTime = 0;
-
 // --- RTC-TIMER MOTION-POLL SLEEP --------------------------------------------
 // Deep sleep the low-power way (~40 uA, board fully dark) instead of the tap
 // interrupt: the board sleeps for a few seconds at a time, briefly wakes to
@@ -485,6 +466,8 @@ void loop() {
     myCodeCell.Motion_GyroRead(gx, gy, gz);
     float gyroMag = sqrt((gx * gx) + (gy * gy) + (gz * gz));
     if (SENSOR_PROFILE & MOTION_GYRO) {
+      // Spinning (e.g. a diabolo) counts as "still being used" for auto-sleep.
+      if (gyroMag > motionThresholdGyro) moving = true;
       int gyroValue = constrain((int)map((long)gyroMag, 0, (long)gyroMax, 0, 127), 0, 127);
       if (gyroValue != lastGyro) {
         sendUDP(tagGyro, gyroValue);
@@ -583,13 +566,6 @@ void loop() {
       if (linValue != lastLin) {
         sendUDP(tagLin, linValue);
         lastLin = linValue;
-      }
-
-    // ---- IS THE PENDULUM STILL BEING USED? ----
-    // Linear acceleration catches swinging, gyro catches spinning. Either one
-    // resets the countdown.
-    if (linMag > motionThresholdLin || gyroMag > motionThresholdGyro) {
-        lastMotionTime = millis();
       }
     }
 
